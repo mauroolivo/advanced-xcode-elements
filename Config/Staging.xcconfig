@@ -3,3 +3,7 @@
 // Staging intentionally tracks Release optimization shape while adding a build marker.
 SWIFT_COMPILATION_MODE = wholemodule
 SWIFT_ACTIVE_COMPILATION_CONDITIONS = STAGING $(inherited)
+
+// Stage 4: Staging variant bundle identifier and display name
+PRODUCT_BUNDLE_IDENTIFIER = $(BUNDLE_ID_PREFIX).staging
+INFOPLIST_KEY_CFBundleDisplayName = $(PRODUCT_NAME) Staging

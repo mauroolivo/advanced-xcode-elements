@@ -2,3 +2,7 @@
 
 // Keep Release behavior aligned with previous in-project declarations.
 SWIFT_COMPILATION_MODE = wholemodule
+
+// Stage 4: Release variant bundle identifier and display name
+PRODUCT_BUNDLE_IDENTIFIER = $(BUNDLE_ID_PREFIX)
+INFOPLIST_KEY_CFBundleDisplayName = $(PRODUCT_NAME)

@@ -2,3 +2,7 @@
 GCC_C_LANGUAGE_STANDARD = gnu17
 IPHONEOS_DEPLOYMENT_TARGET = 27.0
 SDKROOT = iphoneos
+
+// Stage 4: Base bundle identifier prefix for all variants.
+// Configuration-specific suffixes will be appended in Debug/Release/Staging.xcconfig
+BUNDLE_ID_PREFIX = com.mauroolivo.advanced-xcode-elements

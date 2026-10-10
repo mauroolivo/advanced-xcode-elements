@@ -4,3 +4,7 @@
 ONLY_ACTIVE_ARCH = YES
 SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG $(inherited)
 SWIFT_OPTIMIZATION_LEVEL = -Onone
+
+// Stage 4: Debug variant bundle identifier and display name
+PRODUCT_BUNDLE_IDENTIFIER = $(BUNDLE_ID_PREFIX).debug
+INFOPLIST_KEY_CFBundleDisplayName = $(PRODUCT_NAME) Debug

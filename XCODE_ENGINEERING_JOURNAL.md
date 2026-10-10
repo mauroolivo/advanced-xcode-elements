@@ -261,3 +261,151 @@ xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-ele
 ### Toolchain caveats
 - `xcodebuild -configuration <X>` can drive build configuration directly, while scheme action mapping matters for IDE actions and default CLI behavior without explicit `-configuration`.
 - No test target exists yet, so TestAction mapping is inspectable but not yet behaviorally exercised by `xcodebuild test`.
+
+## Stage 4 - Build variants and Info.plist
+
+### Question
+Can build-time settings like bundle ID suffix and display name variant be configured per build configuration, properly resolved via xcconfig variable expansion, and verified in the generated Info.plist?
+
+### Hypothesis
+- Bundle ID suffixes and app name variants can be declared via `PRODUCT_BUNDLE_IDENTIFIER` and `INFOPLIST_KEY_CFBundleDisplayName` in layered xcconfig files.
+- A shared `BUNDLE_ID_PREFIX` in Base.xcconfig plus configuration-specific suffixes should allow three distinct variants (Debug, Release, Staging) to coexist.
+- `xcodebuild -showBuildSettings` will show effective resolved values.
+- `plutil -p Info.plist` will show CFBundleIdentifier and CFBundleDisplayName with correct variant values.
+- xcconfig include path errors should corrupt the build configuration in a detectable way.
+
+### Setting/command
+Created variant strategy in layered xcconfig files:
+
+**Config/Base.xcconfig:**
+```
+BUNDLE_ID_PREFIX = com.mauroolivo.advanced-xcode-elements
+```
+
+**Config/Debug.xcconfig:**
+```
+PRODUCT_BUNDLE_IDENTIFIER = $(BUNDLE_ID_PREFIX).debug
+INFOPLIST_KEY_CFBundleDisplayName = $(PRODUCT_NAME) Debug
+```
+
+**Config/Release.xcconfig:**
+```
+PRODUCT_BUNDLE_IDENTIFIER = $(BUNDLE_ID_PREFIX)
+INFOPLIST_KEY_CFBundleDisplayName = $(PRODUCT_NAME)
+```
+
+**Config/Staging.xcconfig:**
+```
+PRODUCT_BUNDLE_IDENTIFIER = $(BUNDLE_ID_PREFIX).staging
+INFOPLIST_KEY_CFBundleDisplayName = $(PRODUCT_NAME) Staging
+```
+
+Verification commands:
+```bash
+# Effective settings for each configuration
+xcodebuild -showBuildSettings -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator' | grep -E '(PRODUCT_BUNDLE_IDENTIFIER|INFOPLIST_KEY_CFBundleDisplayName)'
+
+# Build and inspect Info.plist
+xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator' clean build
+plutil -p ~/Library/Developer/Xcode/DerivedData/advanced-xcode-elements-cjrfaydyyltnupfjxstveorqztmm/Build/Products/Debug-iphonesimulator/advanced-xcode-elements.app/Info.plist | grep -E '(CFBundleIdentifier|CFBundleDisplayName)'
+```
+
+### Observed evidence
+
+**Effective settings via xcodebuild -showBuildSettings:**
+
+Debug:
+- `PRODUCT_BUNDLE_IDENTIFIER = com.mauroolivo.advanced-xcode-elements.debug`
+- `INFOPLIST_KEY_CFBundleDisplayName = advanced-xcode-elements Debug`
+
+Release:
+- `PRODUCT_BUNDLE_IDENTIFIER = com.mauroolivo.advanced-xcode-elements`
+- `INFOPLIST_KEY_CFBundleDisplayName = advanced-xcode-elements`
+
+Staging:
+- `PRODUCT_BUNDLE_IDENTIFIER = com.mauroolivo.advanced-xcode-elements.staging`
+- `INFOPLIST_KEY_CFBundleDisplayName = advanced-xcode-elements Staging`
+
+**Generated Info.plist inspection after build:**
+
+Debug Info.plist:
+```
+"CFBundleIdentifier" => "com.mauroolivo.advanced-xcode-elements.debug"
+"CFBundleDisplayName" => "advanced-xcode-elements Debug"
+```
+
+Release Info.plist:
+```
+"CFBundleIdentifier" => "com.mauroolivo.advanced-xcode-elements"
+"CFBundleDisplayName" => "advanced-xcode-elements"
+```
+
+Staging Info.plist:
+```
+"CFBundleIdentifier" => "com.mauroolivo.advanced-xcode-elements.staging"
+"CFBundleDisplayName" => "advanced-xcode-elements Staging"
+```
+
+### Deliberate failure and repair
+
+**Failure command:**
+Broke xcconfig include in `Config/Staging.xcconfig`:
+```
+#include "Config/DOES_NOT_EXIST.xcconfig"
+```
+
+**Failure signature:**
+```
+xcodebuild: error: Could not configure request to show build settings: Unable to find a destination matching the provided destination specifier: { generic:1, platform:iOS Simulator }
+Destinations incompatible with the "advanced-xcode-elements-Staging" scheme:
+    { platform:iOS Simulator, ... error:...platform doesn't match advanced-xcode-elements.app's supported platforms. }
+```
+
+The broken include corrupted the build configuration; the target became incompatible with iOS Simulator and only macOS destinations remained available.
+
+**Repair:**
+```
+#include "Config/Base.xcconfig"
+```
+
+Verified restoration:
+```
+PRODUCT_BUNDLE_IDENTIFIER = com.mauroolivo.advanced-xcode-elements.staging
+BUILD SUCCEEDED
+```
+
+### Diagnosis
+
+1. **Variant resolution via xcconfig expansion works correctly:** Each configuration uses `PRODUCT_BUNDLE_IDENTIFIER = $(BUNDLE_ID_PREFIX).suffix` pattern. Xcode resolves variables at build time and embeds into Info.plist during `ProcessInfoPlistFile` phase.
+
+2. **Three distinct bundle IDs coexist safely:** Debug (.debug), Release (base), and Staging (.staging) have unique identifiers, allowing parallel installation on the same device for testing.
+
+3. **Display name customization via INFOPLIST_KEY_* is transparent:** Build-time substitution requires no plist file editing. `GENERATE_INFOPLIST_FILE = YES` processes these keys.
+
+4. **Xcconfig include errors are high-impact failures:** Missing `#include` silently prevents variable definitions. Configuration becomes corrupted, destinations become incompatible. Not an immediate build error, but a severe functional failure.
+
+5. **Layered xcconfig precedence is clear:** Base defines prefix, each config includes Base and appends suffixes. Fully traceable via `xcodebuild -showBuildSettings`.
+
+### Trade-off
+
+**Pros:**
+- Multiple variants on same device (QA/A/B testing essential).
+- Xcconfig variables reduce duplication.
+- Build-time customization, no code changes required.
+- Inspectable via `xcodebuild -showBuildSettings` and `plutil`.
+
+**Cons:**
+- Xcconfig include errors fail silently; severe configuration corruption without immediate build failure.
+- Variable expansion not validated; typos expand to empty/incorrect values.
+- `INFOPLIST_KEY_*` naming convention not obvious; requires documentation.
+
+### Toolchain caveats
+
+- `GENERATE_INFOPLIST_FILE = YES` required for `INFOPLIST_KEY_*` to be embedded.
+- Bundle ID uniqueness not enforced; duplicates cause installation/signing conflicts.
+- `plutil -p` shows final plist only; intermediate variable expansions not visible in build logs without verbose flags.
+- Xcode 27.1/Swift 6.4 support `$(inherited)` concatenation in display name keys.
+
+### Takeaway
+
+Build variants are achieved through layered xcconfig files and build-time variable substitution. Effective bundle ID and display name are resolved during `ProcessInfoPlistFile` phase and embedded into the generated plist. Validation requires both `xcodebuild -showBuildSettings` (declared/resolved values) and `plutil` inspection (final embedded values). Xcconfig include errors are a critical failure mode; preventive path validation would reduce risk.

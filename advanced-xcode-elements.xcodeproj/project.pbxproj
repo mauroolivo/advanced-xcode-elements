@@ -304,6 +304,7 @@
         };
         346252DD307A362D0050E5CF /* Debug configuration for PBXNativeTarget "advanced-xcode-elements" */ = {
             isa = XCBuildConfiguration;
+            baseConfigurationReference = 346252E2307A36560050E5CF /* Debug.xcconfig */;
             buildSettings = {
                 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
                 ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -322,7 +323,6 @@
                     "@executable_path/Frameworks",
                 );
                 MARKETING_VERSION = 1.0;
-                PRODUCT_BUNDLE_IDENTIFIER = "com.mauroolivo.advanced-xcode-elements";
                 PRODUCT_NAME = "$(TARGET_NAME)";
                         STRING_CATALOG_GENERATE_SYMBOLS = YES;
                 SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -336,6 +336,7 @@
         };
         346252DE307A362D0050E5CF /* Release configuration for PBXNativeTarget "advanced-xcode-elements" */ = {
             isa = XCBuildConfiguration;
+            baseConfigurationReference = 346252E3307A36560050E5CF /* Release.xcconfig */;
             buildSettings = {
                 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
                 ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -354,7 +355,6 @@
                     "@executable_path/Frameworks",
                 );
                 MARKETING_VERSION = 1.0;
-                PRODUCT_BUNDLE_IDENTIFIER = "com.mauroolivo.advanced-xcode-elements";
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 STRING_CATALOG_GENERATE_SYMBOLS = YES;
                 SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -368,6 +368,7 @@
         };
         346252E7307A36560050E5CF /* Staging configuration for PBXNativeTarget "advanced-xcode-elements" */ = {
             isa = XCBuildConfiguration;
+            baseConfigurationReference = 346252E5307A36560050E5CF /* Staging.xcconfig */;
             buildSettings = {
                 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
                 ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -386,7 +387,6 @@
                     "@executable_path/Frameworks",
                 );
                 MARKETING_VERSION = 1.0;
-                PRODUCT_BUNDLE_IDENTIFIER = "com.mauroolivo.advanced-xcode-elements";
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 STRING_CATALOG_GENERATE_SYMBOLS = YES;
                 SWIFT_APPROACHABLE_CONCURRENCY = YES;
