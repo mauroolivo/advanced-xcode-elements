@@ -1,0 +1,4 @@
+#include "Config/Base.xcconfig"
+
+// Keep Release behavior aligned with previous in-project declarations.
+SWIFT_COMPILATION_MODE = wholemodule

@@ -124,3 +124,76 @@ xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-ele
 
 #### Restore note
 After collecting evidence, the temporary project Debug `SWIFT_VERSION = 6.0` conflict was removed so the project returns to baseline (`SWIFT_VERSION = 5.0` effective in Debug).
+
+## Stage 2 - Layered xcconfig
+
+### Question
+Can selected in-project build settings be moved into layered `.xcconfig` files without changing effective values?
+
+### Hypothesis
+- Moving equivalent values to layered `.xcconfig` files (Base -> Debug/Release) and attaching them as project base configurations should preserve effective values.
+- `xcodebuild -showBuildSettings` snapshots before/after should match for the moved keys.
+
+### Setting/command
+Created:
+- `Config/Base.xcconfig`
+- `Config/Debug.xcconfig`
+- `Config/Release.xcconfig`
+
+Attached as project base configurations in `advanced-xcode-elements.xcodeproj/project.pbxproj`:
+- Project Debug -> `Config/Debug.xcconfig`
+- Project Release -> `Config/Release.xcconfig`
+
+Moved these project-level declarations out of `.pbxproj` into xcconfigs:
+- `GCC_C_LANGUAGE_STANDARD`
+- `IPHONEOS_DEPLOYMENT_TARGET`
+- `SDKROOT`
+- `ONLY_ACTIVE_ARCH` (Debug)
+- `SWIFT_ACTIVE_COMPILATION_CONDITIONS` (Debug)
+- `SWIFT_OPTIMIZATION_LEVEL` (Debug)
+- `SWIFT_COMPILATION_MODE` (Release)
+
+Before/after comparison commands:
+```bash
+xcodebuild -showBuildSettings -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator'
+xcodebuild -showBuildSettings -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Release -destination 'generic/platform=iOS Simulator'
+```
+
+### Observed evidence
+- Effective-value snapshot for moved keys matched before and after migration.
+- Debug effective values remained:
+  - `GCC_C_LANGUAGE_STANDARD = gnu17`
+  - `IPHONEOS_DEPLOYMENT_TARGET = 27.0`
+  - `SDKROOT = .../iPhoneSimulator27.1.sdk`
+  - `ONLY_ACTIVE_ARCH = NO` (for generic simulator destination)
+  - `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG`
+  - `SWIFT_OPTIMIZATION_LEVEL = -Onone`
+- Release effective values remained:
+  - `GCC_C_LANGUAGE_STANDARD = gnu17`
+  - `IPHONEOS_DEPLOYMENT_TARGET = 27.0`
+  - `SDKROOT = .../iPhoneSimulator27.1.sdk`
+  - `SWIFT_COMPILATION_MODE = wholemodule`
+- Post-migration Debug build succeeded.
+
+### Deliberate failure and repair
+- Failure command (xcconfig path override):
+```bash
+xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator' -xcconfig /tmp/DOES_NOT_EXIST_STAGE2.xcconfig build
+```
+- Failure signature:
+  - `error: Unable to open file '/tmp/DOES_NOT_EXIST_STAGE2.xcconfig' referenced by xcodebuild -xcconfig flag or OverridingXCConfigPath user default.`
+- Repair:
+  - Rebuilt without invalid `-xcconfig` override
+  - Build succeeded
+
+### Diagnosis
+- Layered `.xcconfig` files can preserve behavior when declarations are transferred exactly and attached at the intended scope.
+- Include path resolution is significant; using explicit project-relative include (`#include "Config/Base.xcconfig"`) avoids ambiguity.
+
+### Trade-off
+- Pros: cleaner separation of shared/default/config-specific concerns; easier reuse and review.
+- Cons: misconfigured include paths or wrong attachment scope can silently alter effective platform behavior.
+
+### Toolchain caveats
+- Effective values remain destination-dependent (example: `ONLY_ACTIVE_ARCH = NO` for generic simulator destination even with Debug declaration `YES`).
+- `-xcconfig` CLI override is high leverage; it can replace configuration sources and should be logged in CI.
