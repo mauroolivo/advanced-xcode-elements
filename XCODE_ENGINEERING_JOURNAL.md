@@ -197,3 +197,67 @@ xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-ele
 ### Toolchain caveats
 - Effective values remain destination-dependent (example: `ONLY_ACTIVE_ARCH = NO` for generic simulator destination even with Debug declaration `YES`).
 - `-xcconfig` CLI override is high leverage; it can replace configuration sources and should be logged in CI.
+
+## Stage 3 - Schemes and build configurations
+
+### Question
+How do scheme action mappings (Run/Test/Profile/Analyze/Archive) select configurations, and how does a shared Staging scheme differ from the default scheme behavior?
+
+### Hypothesis
+- A new `Staging` build configuration can be introduced without changing target graph shape.
+- A shared Staging scheme can map actions to different configurations (for example Run=Staging, Test=Debug, Profile=Release).
+- Scheme-name mismatch should fail before build execution.
+
+### Setting/command
+Added `Staging` build configuration at project and target levels in `advanced-xcode-elements.xcodeproj/project.pbxproj`.
+
+Added config file:
+- `Config/Staging.xcconfig`
+
+Created shared schemes:
+- `advanced-xcode-elements.xcodeproj/xcshareddata/xcschemes/advanced-xcode-elements.xcscheme`
+- `advanced-xcode-elements.xcodeproj/xcshareddata/xcschemes/advanced-xcode-elements-Staging.xcscheme`
+
+Key commands:
+```bash
+xcodebuild -list -project advanced-xcode-elements.xcodeproj
+xcodebuild -showBuildSettings -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements-Staging -configuration Staging -destination 'generic/platform=iOS Simulator'
+xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements-Staging -configuration Staging -destination 'generic/platform=iOS Simulator' build
+```
+
+### Observed evidence
+- `xcodebuild -list` now shows build configurations: `Debug`, `Release`, `Staging`.
+- `xcodebuild -list` shows schemes: `advanced-xcode-elements`, `advanced-xcode-elements-Staging`.
+- Effective settings for Staging include:
+  - `SWIFT_COMPILATION_MODE = wholemodule`
+  - `SWIFT_ACTIVE_COMPILATION_CONDITIONS = STAGING`
+- Shared Staging scheme action mapping (from `.xcscheme`):
+  - TestAction -> `Debug`
+  - LaunchAction -> `Staging`
+  - ProfileAction -> `Release`
+  - AnalyzeAction -> `Staging`
+  - ArchiveAction -> `Staging`
+
+### Deliberate failure and repair
+- Failure command:
+```bash
+xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements-Staging-NOTFOUND -destination 'generic/platform=iOS Simulator' build
+```
+- Failure signature:
+  - `error: ... does not contain a scheme named "advanced-xcode-elements-Staging-NOTFOUND"`
+- Repair:
+  - Rebuilt with valid scheme `advanced-xcode-elements-Staging` and configuration `Staging`
+  - Build succeeded
+
+### Diagnosis
+- Scheme identity is an explicit input to action/configuration selection; invalid scheme names fail early.
+- Action-specific config mapping is data in the `.xcscheme` file, independent from target build settings.
+- Shared schemes make these mappings deterministic for CLI/CI and between developers.
+
+### Trade-off
+- Shared schemes improve reproducibility and reduce "works on my machine" behavior.
+- Additional schemes increase maintenance surface and must be reviewed when adding/removing configurations.
+
+### Toolchain caveats
+- `xcodebuild -configuration <X>` can drive build configuration directly, while scheme action mapping matters for IDE actions and default CLI behavior without explicit `-configuration`.
+- No test target exists yet, so TestAction mapping is inspectable but not yet behaviorally exercised by `xcodebuild test`.

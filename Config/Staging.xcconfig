@@ -1,0 +1,5 @@
+#include "Config/Base.xcconfig"
+
+// Staging intentionally tracks Release optimization shape while adding a build marker.
+SWIFT_COMPILATION_MODE = wholemodule
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = STAGING $(inherited)
