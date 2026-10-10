@@ -1,0 +1,126 @@
+# Xcode Engineering Journal
+
+## Stage 0 - Laboratory and project anatomy
+
+### Question
+Which target(s) and phases does this project actually build, and where do effective settings come from in this toolchain/project combination?
+
+### Hypothesis
+- The scheme builds one app target with no target dependencies.
+- Build work should include compile, link, Info.plist processing, and code signing for simulator artifacts.
+- Effective settings should resolve from target/project defaults plus toolchain/platform defaults, visible via `xcodebuild -showBuildSettings`.
+
+### Setting/command
+```bash
+xcode-select -p
+xcodebuild -version
+xcrun swift --version
+xcodebuild -list -project advanced-xcode-elements.xcodeproj
+xcodebuild -showdestinations -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements
+xcodebuild -showBuildSettings -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator'
+xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator' clean build
+```
+
+### Observed evidence
+- Toolchain:
+  - Xcode `27.1` (`27A9269`)
+  - Swift `6.4` (`swiftlang-6.4.0.34.1`)
+  - Selected developer dir: `/Users/mauro/Downloads/Xcode.app/Contents/Developer`
+- Project structure from `xcodebuild -list`:
+  - Targets: `advanced-xcode-elements`
+  - Configurations: `Debug`, `Release`
+  - Schemes: `advanced-xcode-elements`
+- Destination inspection:
+  - Compatible generic destinations include `Any iOS Device` and `Any iOS Simulator Device`
+  - Deployment target is iOS `27.0`; older iOS 26.x devices/simulators are reported incompatible
+- Effective settings excerpt (Debug + generic simulator):
+  - `PRODUCT_BUNDLE_IDENTIFIER = com.mauroolivo.advanced-xcode-elements`
+  - `SWIFT_VERSION = 5.0`
+  - `IPHONEOS_DEPLOYMENT_TARGET = 27.0`
+  - `SDKROOT = .../iPhoneSimulator27.1.sdk`
+  - DerivedData-backed `OBJROOT`, `SYMROOT`, `TARGET_BUILD_DIR`
+- Build graph/log evidence:
+  - `note: Target dependency graph (1 target)`
+  - `Target 'advanced-xcode-elements' ... (no dependencies)`
+  - Build steps include `SwiftCompile`, `Ld`, `ProcessInfoPlistFile`, `CopySwiftLibs`, `CodeSign`
+
+### Deliberate failure and repair
+- Failure command:
+```bash
+xcodebuild -project advanced-xcode-elements.xcodeproj -scheme DOES_NOT_EXIST -destination 'generic/platform=iOS Simulator' build
+```
+- Failure signature:
+  - `error: ... does not contain a scheme named "DOES_NOT_EXIST"`
+- Repair:
+  - Re-ran build using valid scheme `advanced-xcode-elements`
+  - Build succeeded
+
+### Diagnosis
+- Scheme selection is a first-order build graph input; invalid scheme blocks graph construction entirely.
+- Effective values come from layered resolution (project/target/config/platform/toolchain defaults), not from one declaration point.
+- The project currently has a single-target graph, making Stage 0 a clean baseline for later dependency experiments.
+
+### Trade-off
+- Single-target baseline improves observability and reduces confounders.
+- It does not reflect multi-target production complexity yet (added in later stages).
+
+### Toolchain caveats
+- Although Swift compiler version is 6.4, `SWIFT_VERSION` resolves to `5.0` for this target, so language mode and compiler version are distinct.
+- Deployment target at iOS 27.0 excludes many connected 26.x devices/simulators in destination selection.
+- Preview behavior was inferred from build artifacts/log signatures (`__preview.dylib`) and was not interactively measured inside Xcode UI in this CLI run.
+
+## Stage 1 - Build setting resolution
+
+### Question
+When project and target declare conflicting values for the same build setting, which value becomes effective for the built target, and how does command-line override precedence compare?
+
+### Hypothesis
+- Target-level value should override project-level value for the same configuration.
+- A command-line override passed to `xcodebuild` should override both project and target declarations.
+
+### Setting/command
+Configured a controlled conflict in `advanced-xcode-elements.xcodeproj/project.pbxproj`:
+- Project Debug: `SWIFT_VERSION = 6.0`
+- Target Debug: `SWIFT_VERSION = 5.0`
+
+Commands used:
+```bash
+xcodebuild -showBuildSettings -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator' | grep -E '^\s*SWIFT_VERSION\s*='
+xcodebuild -showBuildSettings -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator' SWIFT_VERSION=6.0 | grep -E '^\s*SWIFT_VERSION\s*='
+```
+
+### Observed evidence
+- Declared conflict in `project.pbxproj` was present:
+  - Project Debug: `SWIFT_VERSION = 6.0`
+  - Target Debug: `SWIFT_VERSION = 5.0`
+- Effective value for normal Debug build settings:
+  - `SWIFT_VERSION = 5.0` (target-level value wins)
+- Effective value with command-line override:
+  - `SWIFT_VERSION = 6.0` (CLI override wins over project+target)
+
+### Deliberate failure and repair
+- Failure command:
+```bash
+xcodebuild -project advanced-xcode-elements.xcodeproj -scheme advanced-xcode-elements -configuration Debug -destination 'generic/platform=iOS Simulator' SWIFT_VERSION=9.9 build
+```
+- Failure signature:
+  - `error: SWIFT_VERSION '9.9' is unsupported, supported versions are: 4.0, 4.2, 5.0, 6.0.`
+- Repair:
+  - Removed invalid CLI override and rebuilt with normal settings
+  - Build succeeded
+
+### Diagnosis
+- For same-key conflicts in one configuration scope, target-level declaration overrides project-level declaration for target builds.
+- Command-line overrides are higher precedence and can mask project/target declarations in local/CI runs.
+
+### Trade-off
+- Project-level defaults reduce duplication across targets.
+- Target overrides enable intentional divergence but can create hidden behavior if not documented.
+- CLI overrides are useful for experimentation/CI matrix work, but can reduce reproducibility if not explicitly logged.
+
+### Toolchain caveats
+- `SWIFT_VERSION` accepts language mode values; it does not imply compiler binary version.
+- In this environment, compiler is Swift 6.4 while target language mode can still be 5.0 or 6.0.
+
+#### Restore note
+After collecting evidence, the temporary project Debug `SWIFT_VERSION = 6.0` conflict was removed so the project returns to baseline (`SWIFT_VERSION = 5.0` effective in Debug).
