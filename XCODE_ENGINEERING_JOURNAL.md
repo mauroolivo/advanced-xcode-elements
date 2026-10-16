@@ -646,3 +646,115 @@ xcodebuild -project advanced-xcode-elements.xcodeproj \
 
 ### Takeaway
 Concurrency behavior is determined by the combination of actor isolation defaults, strictness policy, and Swift language mode; in this project, the same code path is warning-level in Swift 5 and error-level in Swift 6.
+
+## Stage 7 - Incremental compilation and timing
+
+### Question
+How does incremental build work differ between (a) private implementation-only changes and (b) public API surface changes, compared against clean and no-op warm builds?
+
+### Hypothesis
+- Clean build should run full compile/link/resource/sign pipeline.
+- Warm no-change build should do near-zero work.
+- Private implementation change in one source file should recompile that file only (per architecture), then relink.
+- Public API change plus call-site update should recompile both changed files, increasing Swift compile work.
+
+### Setting/command
+Added a minimal cross-file dependency for measurement:
+- `advanced-xcode-elements/advanced_xcode_elementsApp.swift`
+  - `Stage7MessageFactory.greeting(...)`
+- `advanced-xcode-elements/ContentView.swift`
+  - `Text(Stage7MessageFactory.greeting(...))`
+
+Commands used:
+
+```bash
+# Effective settings context
+xcodebuild -showBuildSettings \
+  -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  | grep -E '^\s*(SWIFT_COMPILATION_MODE|SWIFT_OPTIMIZATION_LEVEL|SWIFT_VERSION|BUILD_ACTIVE_RESOURCES_ONLY|ONLY_ACTIVE_ARCH)\s*='
+
+# Clean baseline
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  clean build -showBuildTimingSummary
+
+# Warm no-change baseline
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build -showBuildTimingSummary
+
+# After private implementation-only change in Stage7MessageFactory.format(...)
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build -showBuildTimingSummary
+
+# After public API surface change (greeting signature) + call-site update
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build -showBuildTimingSummary
+```
+
+### Observed evidence
+- Effective settings (Debug + generic simulator):
+  - `SWIFT_OPTIMIZATION_LEVEL = -Onone`
+  - `SWIFT_VERSION = 5.0`
+  - `ONLY_ACTIVE_ARCH = NO`
+  - `BUILD_ACTIVE_RESOURCES_ONLY = NO`
+  - `SWIFT_COMPILATION_MODE` not explicitly shown in this configuration snapshot.
+- Clean build timing summary (selected lines):
+  - `CompileAssetCatalogVariant (1) | 1.038s`
+  - `SwiftCompile (6) | 0.997s`
+  - `Ld (6) | 0.728s`
+  - `SwiftDriver (2) | 0.582s`
+- Warm no-change build:
+  - `Build Timing Summary` present with no compile/link tasks listed (no-op incremental behavior).
+- Private implementation-only change (`format(_:)` body in `advanced_xcode_elementsApp.swift`):
+  - Recompiled only `advanced_xcode_elementsApp.swift` for arm64 + x86_64.
+  - Did not recompile `ContentView.swift`.
+  - Timing excerpt:
+    - `SwiftCompile (2) | 0.720s`
+    - `Ld (4) | 1.073s`
+- Public API change + call-site update (`greeting(for:punctuation:)` and `ContentView` call):
+  - Recompiled both `advanced_xcode_elementsApp.swift` and `ContentView.swift` for arm64 + x86_64.
+  - Timing excerpt:
+    - `SwiftCompile (4) | 0.695s`
+    - `Ld (4) | 0.670s`
+
+### Deliberate failure and repair
+- Failure setup:
+  - Temporarily called `Stage7MessageFactory.greeting(for: "world")` after API changed to require `punctuation`.
+- Failure signature:
+  - `error: missing argument for parameter 'punctuation' in call`
+  - Fails in `SwiftCompile ... ContentView.swift`.
+- Repair:
+  - Restored call to `Stage7MessageFactory.greeting(for: "world", punctuation: "!")`.
+  - Rebuilt successfully (`** BUILD SUCCEEDED **`).
+
+### Diagnosis
+- Incremental build scope depends on dependency impact, not just file count changed.
+- Private implementation changes can stay local to one file's compile jobs plus downstream link/sign.
+- Public API/call-site changes expand compile scope to all affected dependents.
+- Clean-build timing is not representative of no-change incremental behavior.
+
+### Trade-off
+- Rich cross-file abstractions improve maintainability but can increase incremental rebuild blast radius when APIs churn.
+- Stable public surfaces and minimizing unnecessary signature changes help preserve developer feedback speed.
+
+### Toolchain caveats
+- Generic simulator destination builds both arm64 and x86_64 in this environment, effectively doubling many compile tasks.
+- Incremental behavior is cache- and timestamp-sensitive; ensure source timestamp updates are reflected before interpreting no-op builds.
+- `-showBuildTimingSummary` is useful for category-level timing, but file-level recompilation scope still requires compile-log inspection.
+
+### Takeaway
+Incremental compilation payoff comes from minimizing API-surface churn: private implementation edits stayed localized, while public API edits widened the compile graph and increased rebuilt units.

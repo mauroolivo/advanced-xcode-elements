@@ -21,7 +21,7 @@ struct ContentView: View {
             Image(systemName: "globe")
                 .imageScale(.large)
                 .foregroundStyle(.tint)
-            Text("Hello, world!")
+            Text(Stage7MessageFactory.greeting(for: "world", punctuation: "!"))
         }
         .padding()
     }
