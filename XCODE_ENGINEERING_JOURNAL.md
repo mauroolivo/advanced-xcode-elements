@@ -522,3 +522,127 @@ xcodebuild -project advanced-xcode-elements.xcodeproj \
 
 ### Takeaway
 Compiler-configuration work should be validated at the invocation level, not only at Build Settings UI level: `SWIFT_*` keys are hypotheses, and the verbose `swiftc` command is the evidence.
+
+## Stage 6 - Swift concurrency configuration
+
+### Question
+How do Swift language mode (`SWIFT_VERSION`) and concurrency strictness settings interact with default actor isolation in this project, and when does an isolation issue move from warning to error?
+
+### Hypothesis
+- With current target defaults (`SWIFT_VERSION = 5.0`, `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, `SWIFT_APPROACHABLE_CONCURRENCY = YES`), a deliberate actor-isolation violation should appear as a warning.
+- Keeping strict concurrency checks in Swift 5 mode should still allow build completion (warning-level diagnostics).
+- Switching to Swift 6 mode with strict concurrency should escalate the same violation to a build-stopping error.
+
+### Setting/command
+Added a minimal probe in `advanced-xcode-elements/ContentView.swift`, gated behind a compile condition so baseline builds are unaffected:
+
+```swift
+#if STAGE6_CONCURRENCY_LAB
+final class Stage6MutableBox {
+    var value = 0
+}
+
+func stage6IsolationProbe() {
+    let box = Stage6MutableBox()
+    Task.detached {
+        box.value += 1
+    }
+}
+#endif
+```
+
+Commands used:
+
+```bash
+# Baseline concurrency settings
+xcodebuild -showBuildSettings \
+  -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  | grep -E '^\s*(SWIFT_VERSION|SWIFT_STRICT_CONCURRENCY|SWIFT_APPROACHABLE_CONCURRENCY|SWIFT_DEFAULT_ACTOR_ISOLATION|SWIFT_ACTIVE_COMPILATION_CONDITIONS)\s*='
+
+# Swift 5 + minimal strictness with probe enabled
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG STAGE6_CONCURRENCY_LAB' \
+  SWIFT_STRICT_CONCURRENCY=minimal
+
+# Swift 5 + complete strictness with probe enabled
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG STAGE6_CONCURRENCY_LAB' \
+  SWIFT_STRICT_CONCURRENCY=complete
+
+# Swift 6 + complete strictness with probe enabled (expected failure)
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG STAGE6_CONCURRENCY_LAB' \
+  SWIFT_STRICT_CONCURRENCY=complete \
+  SWIFT_VERSION=6.0
+
+# Inspect concrete compiler invocation for one probe run
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build -verbose \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG STAGE6_CONCURRENCY_LAB' \
+  SWIFT_STRICT_CONCURRENCY=minimal \
+  | grep -E 'swiftc -module-name|default-isolation|swift-version|\-DDEBUG|\-DSTAGE6_CONCURRENCY_LAB'
+```
+
+### Observed evidence
+- Baseline effective concurrency settings (Debug):
+  - `SWIFT_VERSION = 5.0`
+  - `SWIFT_APPROACHABLE_CONCURRENCY = YES`
+  - `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`
+  - `SWIFT_STRICT_CONCURRENCY` not explicitly declared in baseline output.
+- Swift invocation evidence includes:
+  - `-default-isolation=MainActor`
+  - `-swift-version 5`
+  - `-DDEBUG -DSTAGE6_CONCURRENCY_LAB` (when probe flag is enabled)
+- Probe diagnostics under Swift 5 (`minimal` and `complete` both tested):
+  - Warning at `ContentView.swift:13:13`
+  - `warning: main actor-isolated property 'value' can not be mutated from a nonisolated context`
+  - Build continues.
+- Probe diagnostics under Swift 6 + `complete`:
+  - Same site (`ContentView.swift:13:13`) escalates to:
+  - `error: main actor-isolated property 'value' can not be mutated from a nonisolated context`
+  - Build fails.
+
+### Deliberate failure and repair
+- Failure setup:
+  - Enabled probe + `SWIFT_STRICT_CONCURRENCY=complete` + `SWIFT_VERSION=6.0`.
+- Failure signature:
+  - `error: main actor-isolated property 'value' can not be mutated from a nonisolated context`
+  - Build fails in `SwiftCompile ... ContentView.swift`.
+- Repair:
+  - Removed temporary CLI overrides and rebuilt with default project settings.
+  - Default Debug build returned to `** BUILD SUCCEEDED **`.
+
+### Diagnosis
+- In this toolchain/project, language mode boundary (`SWIFT_VERSION=5.0` vs `6.0`) is the key diagnostic severity switch for this isolation violation.
+- `SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor` makes unannotated declarations main-actor isolated, which is why mutating from `Task.detached` is diagnosed.
+- Strictness toggles alone (minimal vs complete) did not change severity for this specific probe while remaining in Swift 5 mode.
+
+### Trade-off
+- Keeping Swift 5 mode with approachable concurrency can ease migration by preserving warning-level diagnostics.
+- Swift 6 mode surfaces stronger correctness guarantees sooner but can turn existing warnings into blocking errors, requiring planned refactors.
+
+### Toolchain caveats
+- Concurrency diagnostics are highly toolchain- and mode-dependent; always log `xcodebuild -version`, `swift --version`, and effective build settings with each experiment.
+- Some strict-concurrency keys may be implicit/defaulted and not visible unless explicitly set.
+- Generic simulator destination still builds for multiple simulator architectures in this environment; duplicate warning lines can appear.
+
+### Takeaway
+Concurrency behavior is determined by the combination of actor isolation defaults, strictness policy, and Swift language mode; in this project, the same code path is warning-level in Swift 5 and error-level in Swift 6.
