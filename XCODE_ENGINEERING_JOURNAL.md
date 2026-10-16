@@ -409,3 +409,116 @@ BUILD SUCCEEDED
 ### Takeaway
 
 Build variants are achieved through layered xcconfig files and build-time variable substitution. Effective bundle ID and display name are resolved during `ProcessInfoPlistFile` phase and embedded into the generated plist. Validation requires both `xcodebuild -showBuildSettings` (declared/resolved values) and `plutil` inspection (final embedded values). Xcconfig include errors are a critical failure mode; preventive path validation would reduce risk.
+
+## Stage 5 - Swift compiler configuration
+
+### Question
+How do `SWIFT_ACTIVE_COMPILATION_CONDITIONS` and `SWIFT_OPTIMIZATION_LEVEL` resolve into actual `swiftc` flags, and what failure signature appears when optimization is misconfigured?
+
+### Hypothesis
+- Debug baseline should compile with `-Onone` and `-DDEBUG`.
+- Adding a custom condition should add another `-D<FLAG>` in the Swift invocation.
+- Forcing `SWIFT_OPTIMIZATION_LEVEL=-O` in Debug should swap `-Onone` for `-O`.
+- An invalid optimization level should fail during Swift driver planning/argument validation.
+
+### Setting/command
+No persistent project-setting changes were made. Experiments were run with `xcodebuild` CLI overrides to keep the repository state stable.
+
+```bash
+# Toolchain check
+xcodebuild -version
+xcrun swift --version
+
+# Baseline effective compiler settings (Debug)
+xcodebuild -showBuildSettings \
+  -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  | grep -E '^\s*(SWIFT_VERSION|SWIFT_ACTIVE_COMPILATION_CONDITIONS|SWIFT_OPTIMIZATION_LEVEL|SWIFT_COMPILATION_MODE)\s*='
+
+# Alternative config snapshot (Staging)
+xcodebuild -showBuildSettings \
+  -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Staging \
+  -destination 'generic/platform=iOS Simulator' \
+  | grep -E '^\s*(SWIFT_VERSION|SWIFT_ACTIVE_COMPILATION_CONDITIONS|SWIFT_OPTIMIZATION_LEVEL|SWIFT_COMPILATION_MODE)\s*='
+
+# Inspect concrete swift invocation (baseline)
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build -verbose \
+  | grep -E 'builtin-SwiftDriver --|swiftc -module-name|\\-Onone|\\-DDEBUG'
+
+# Toggle condition via CLI override and inspect effective value
+xcodebuild -showBuildSettings \
+  -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG STAGE5_CONDITION' \
+  | grep -E '^\s*SWIFT_ACTIVE_COMPILATION_CONDITIONS\s*='
+
+# Toggle optimization via CLI override and inspect swift invocation
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build -verbose SWIFT_OPTIMIZATION_LEVEL=-O \
+  | grep -E 'builtin-SwiftDriver --|swiftc -module-name|-Onone\\b|-O\\b'
+```
+
+### Observed evidence
+- Toolchain remains:
+  - Xcode `27.1` (`27A9269`)
+  - Swift `6.4` (`swiftlang-6.4.0.34.1`)
+- Debug effective compiler settings:
+  - `SWIFT_VERSION = 5.0`
+  - `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG DEBUG`
+  - `SWIFT_OPTIMIZATION_LEVEL = -Onone`
+- Staging comparison:
+  - `SWIFT_ACTIVE_COMPILATION_CONDITIONS = STAGING STAGING`
+  - `SWIFT_COMPILATION_MODE = wholemodule`
+- Baseline debug compiler invocation (`build -verbose`) includes:
+  - `swiftc ... -Onone ... -DDEBUG -DDEBUG ... -swift-version 5 ...`
+- Condition toggle via override (`SWIFT_ACTIVE_COMPILATION_CONDITIONS='DEBUG STAGE5_CONDITION'`) resolves and appears in invocation as:
+  - `-DDEBUG -DSTAGE5_CONDITION`
+- Optimization toggle via override (`SWIFT_OPTIMIZATION_LEVEL=-O`) resolves and appears in invocation as:
+  - `swiftc ... -O ...` (replacing baseline `-Onone`)
+
+### Deliberate failure and repair
+- Failure command:
+```bash
+xcodebuild -project advanced-xcode-elements.xcodeproj \
+  -scheme advanced-xcode-elements \
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build SWIFT_OPTIMIZATION_LEVEL=-O123
+```
+- Failure signature:
+  - `error: Driver threw unknown argument: '-O123' without emitting errors.`
+  - Build fails in `SwiftDriver ... swift.compiler` phase.
+- Repair:
+  - Removed invalid override and rebuilt with default Debug settings.
+  - Build returned to `** BUILD SUCCEEDED **`.
+
+### Diagnosis
+- Declared build settings become concrete compiler behavior only after expansion into the actual `swiftc` invocation.
+- In this project, `SWIFT_VERSION=5.0` controls language mode (`-swift-version 5`) while the compiler binary remains Swift 6.4.
+- `SWIFT_ACTIVE_COMPILATION_CONDITIONS` maps directly to `-D` flags and is easy to audit in verbose logs.
+- `SWIFT_OPTIMIZATION_LEVEL` maps directly to `swiftc` optimization flags and can hard-fail if invalid.
+
+### Trade-off
+- CLI overrides are excellent for controlled experiments and CI matrices with zero persistent project churn.
+- They are also a reproducibility risk if command-line overrides are not logged, because local/CI behavior can silently diverge from checked-in settings.
+
+### Toolchain caveats
+- In this Xcode 27.1 toolchain, adding `OTHER_SWIFT_FLAGS=-driver-print-jobs` caused `Swift driver build planning failed`; `build -verbose` was a safer way to inspect real invocations.
+- Duplicate condition tokens (`DEBUG DEBUG`, `STAGING STAGING`) can appear from combined setting layers; this is usually harmless but signals layering noise worth cleaning later.
+- Simulator generic destination emits both arm64 and x86_64 compiler invocations in this environment; inspect both if architecture-specific behavior is suspected.
+
+### Takeaway
+Compiler-configuration work should be validated at the invocation level, not only at Build Settings UI level: `SWIFT_*` keys are hypotheses, and the verbose `swiftc` command is the evidence.
